@@ -23,7 +23,6 @@ import Prelude hiding (null, lookup)
 import Data.Maybe
 import Data.Proxy (Proxy(..))
 import Test.QuickCheck
-import Test.QuickCheck.Poly
 
 
 data Interval a = Interval

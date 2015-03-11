@@ -24,7 +24,7 @@ build-type:          Simple
 -- --  build-tools:       alex happy c2hs
 
 executable           generator
-  build-depends:     base >= 4.7, semigroups
+  build-depends:     base >= 4.7, semigroups, QuickCheck
   main-is:           RandomProgramGeneration.hs
   default-language:  Haskell2010
   ghc-options:       -W -Wall
