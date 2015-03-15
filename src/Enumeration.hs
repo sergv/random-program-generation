@@ -6,21 +6,21 @@
 
 {-# OPTIONS_GHC -funbox-strict-fields #-}
 
---module RandomProgramGeneration where
+module Enumeration where
 
 import Control.Applicative hiding (empty)
 import Control.Arrow
 import qualified Control.Exception as E
 import Control.Monad
-import Data.List (foldl', tails, maximumBy)
+import Data.List (foldl', tails)
 import Data.Tuple (swap)
 import Data.Typeable
-import System.Environment
 import System.IO.Unsafe
+import System.Random
 
 import Debug.Trace
 
-import IntervalSetList (IntervalSet)
+import IntervalSetList (IntervalSet, Interval(..), mkInterval)
 import qualified IntervalSetList as IS
 
 -- import BignumNum
@@ -194,19 +194,6 @@ reversals xs = go [] xs
       where
         rs' = x : rs
 
-
-enumerateBool :: Enumeration Bool
-enumerateBool = pay $ singleton True `union` singleton False
-
-enumerateList :: Enumeration a -> Enumeration [a]
--- enumerateList x = pay $ singleton [] `union` ((:) <$> x <*> enumerateList x)
-enumerateList x = enum
-  where
-    enum = pay $ singleton [] `union` ((:) <$> x <*> enum)
-
-boolLists :: () -> Enumeration [Bool]
-boolLists () = enumerateList enumerateBool
-
 fxIndex :: Fixed a -> BigInt -> Either String a
 fxIndex Empty _ = Left "no elements in empty fixed set"
 fxIndex (Singleton x) 0 = Right x
@@ -238,39 +225,43 @@ indexAbs n mkEnum = go n 0 (parts $ mkEnum ())
 
 -- Check whether @p@ needs to look at its argument to produce a value.
 -- Returns Nothing if it does or (Just b) if its result is b for any input.
+--
+-- Compared to (const Nothing) implementation with unsafePerformIO
+-- makes whole generation program twice as slow.
 valid :: (a -> Bool) -> Maybe Bool
-valid p =
-  case unsafePerformIO $ E.try $ E.evaluate (p undefined) of
-    Left (_ :: E.SomeException) -> Nothing
-    Right x                     -> Just x
+valid _p = Nothing
+  -- case unsafePerformIO $ E.try $ E.evaluate (p undefined) of
+  --   Left (_ :: E.SomeException) -> Nothing
+  --   Right x                     -> Just x
 
 data MyException = MyException
   deriving (Typeable, Show)
 
 instance E.Exception MyException
 
+-- TODO: not sure whether this function is useful
 inspectsRight :: ((a, b) -> Bool) -> Bool
-inspectsRight p =
-  case unsafePerformIO $ E.try $ E.evaluate (p (undefined, E.throw MyException)) of
-    Left (e :: E.SomeException) ->
-      case E.fromException e of
-        Nothing          -> False
-        Just MyException -> True
-    Right _                     -> False
+inspectsRight _p = False
+  -- case unsafePerformIO $ E.try $ E.evaluate (p (undefined, E.throw MyException)) of
+  --   Left (e :: E.SomeException) ->
+  --     case E.fromException e of
+  --       Nothing          -> False
+  --       Just MyException -> True
+  --   Right _                     -> False
 
 
 
 
 data Result a =
     Ok a
-  | PredicateFailed [(BigInt, BigInt)] -- ^ Ranges of indices for which predicate
-                                       -- returned false.
+  | PredicateFailed [Interval BigInt] -- ^ Ranges of indices for which predicate
+                                      -- returned false.
   | Error String
   deriving (Show, Eq, Ord)
 
 mapIndices :: (BigInt -> BigInt) -> Result a -> Result a
 mapIndices _ r@(Ok _)             = r
-mapIndices f (PredicateFailed rs) = PredicateFailed $ map (f *** f) rs
+mapIndices f (PredicateFailed rs) = PredicateFailed $ map (fmap f) rs
 mapIndices _ r@(Error _)          = r
 
 instance Functor Result where
@@ -303,8 +294,8 @@ fxIndexPred :: (a -> Bool) -> Fixed a -> BigInt -> Result a
 fxIndexPred _ Empty _ = Error "no elements in empty fixed set"
 fxIndexPred p (Singleton x) 0
   | p x       = Ok x
-  | otherwise = PredicateFailed [(0, 0)]
-fxIndexPred p (Singleton _) n = Error $ "cannot get " ++ show n ++ "th index in singleton fixed set"
+  | otherwise = PredicateFailed [mkInterval 0 0]
+fxIndexPred _ (Singleton _) n = Error $ "cannot get " ++ show n ++ "th index in singleton fixed set"
 fxIndexPred p (Union _ x y) n
   | n < xCard = fxIndexPred p x n
   | otherwise = mapIndices (+xCard) $! fxIndexPred p y $! n - xCard
@@ -316,7 +307,7 @@ fxIndexPred p (Product _ x y) n
 fxIndexPred p (DotProduct _ xs ys) n = fxIndexPred p (dotProduct xs ys) n
 fxIndexPred p (f :$: x) n =
   case valid p' of
-    Just False -> PredicateFailed [(0, fxCardinality x)]
+    Just False -> PredicateFailed [mkInterval 0 $ fxCardinality x]
     Just True  -> f <$> fxIndexPred (const True) x n
     Nothing    -> f <$> fxIndexPred p' x n
   where
@@ -333,25 +324,53 @@ indexPred idx pred mkEnum = go idx 0 $ parts $ mkEnum ()
       | n < fxCardinality fx =
         case fxIndexPred pred fx n of
           Ok x               -> Right x
-          PredicateFailed rs -> go (maximum (map (\(a, b) -> max a b) rs) + 1) k fxsOrig
+          PredicateFailed rs -> go n' k fxsOrig
+            where
+              n' = maximum (map (\i -> intervalStart i `max` intervalEnd i) rs) + 1
           Error msg          -> Left msg
       | otherwise =
         let n' = n - fxCardinality fx
             k' = k + 1
         in  n' `seq` k' `seq` go n' k' fxs
 
-isListSorted :: (Ord a, Show a) => [a] -> Bool
-isListSorted []             = True
-isListSorted [_]            = True
-isListSorted (x1:xs@(x2:_)) = x1 <= x2 && isListSorted xs
+generateRandomValues :: forall g a. (RandomGen g) => Fixed a -> (a -> Bool) -> g -> BigInt -> [a]
+generateRandomValues fx pred gen tries
+  | card /= 0 = trace ("cardinality = " ++ show card) $ go gen IS.empty tries
+  | otherwise = error "cannot generate random values from fixed set with cardinality 0"
+  where
+    card = fxCardinality fx
+    badIntervalGrowth = 100 -- 00
+    go :: g -> IntervalSet BigInt -> BigInt -> [a]
+    go _   badIntervals _
+      | trace ("|bad intervals| = " ++ show (IS.size badIntervals) ++ ", |excluded elements| = " ++ show (IS.sumIntervals badIntervals)) False = undefined
+    go _   _            0     = []
+    go gen badIntervals tries =
+      case IS.lookup idx badIntervals of
+        Just i  -> tryIdx $ IS.countSucc $ IS.intervalEnd i
+        Nothing -> tryIdx idx
+      where
+        (idx, gen') = randomR (0, card) gen
+        tries' = tries - 1
+        tryIdx :: BigInt -> [a]
+        tryIdx n =
+          case fxIndexPred pred fx n of
+            Ok x               -> x : go gen' badIntervals tries'
+            PredicateFailed rs ->
+              let (maybeNewItem, n', rs') = growRightEnd n badIntervalGrowth rs
+                  newIntervals            = IS.insert (mkInterval n n') $ foldr IS.insert badIntervals rs'
+              in case maybeNewItem of
+                   Just newItem -> newItem : go gen' newIntervals tries'
+                   Nothing      -> go gen' newIntervals tries'
+            Error _            -> []
 
-main :: IO ()
-main = do
-  args <- getArgs
-  case args of
-    -- [n]    -> putStrLn $ show $ indexAbs (read n) boolLists
-    -- [p, q] -> putStrLn $ show $ indexAbs (read p ^ read q) boolLists
-    [n]    -> putStrLn $ show $ indexPred (read n) isListSorted boolLists
-    [p, q] -> putStrLn $ show $ indexPred (read p ^ read q) isListSorted boolLists
-
-
+    -- @n@ - last tried index that is known to be bad
+    growRightEnd :: BigInt -> BigInt -> [Interval BigInt] -> (Maybe a, BigInt, [Interval BigInt])
+    growRightEnd n 0 rs = (Nothing, n, rs)
+    growRightEnd n k rs =
+      case fxIndexPred pred fx n of
+        Ok x                -> (Just x, n - 1, rs)
+        PredicateFailed rs' -> n' `seq` k' `seq` growRightEnd n' k' (rs' ++ rs)
+        Error _             -> (Nothing, n, rs)
+      where
+        n' = n + 1
+        k' = k - 1

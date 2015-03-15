@@ -8,8 +8,6 @@ import Text.Printf
 import Prelude hiding (divMod, div, mod)
 import qualified Prelude as P
 
-import Debug.Trace
-
 data Bit = Zero | One
   deriving (Show, Eq, Ord, Enum, Bounded)
 

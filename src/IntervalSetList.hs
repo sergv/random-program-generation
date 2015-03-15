@@ -1,3 +1,4 @@
+{-# LANGUAGE DeriveFunctor            #-}
 {-# LANGUAGE NondecreasingIndentation #-}
 {-# LANGUAGE ScopedTypeVariables      #-}
 
@@ -9,9 +10,13 @@ module IntervalSetList
   , IntervalSet
   , isInside
   , empty
+  , size
+  , sumIntervals
   , null
+  , union
   , insert
   , lookup
+  , Countable(..)
   )
 where
 
@@ -29,6 +34,7 @@ data Interval a = Interval
   { intervalStart :: a
   , intervalEnd   :: a
   }
+  deriving (Functor)
   -- deriving (Show) --, Eq, Ord)
 
 instance (Show a) => Show (Interval a) where
@@ -70,12 +76,12 @@ isMergeable x@(Interval xl xr) y@(Interval yl yr) =
   -- y is to the left of x
   countSucc yr == xl
 
-union :: (Ord a, Countable a) => Interval a -> Interval a -> Interval a
-union x@(Interval xl xr) y@(Interval yl yr)
+merge :: (Ord a, Countable a) => Interval a -> Interval a -> Interval a
+merge x@(Interval xl xr) y@(Interval yl yr)
   | isMergeable x y =
     Interval (xl `min` yl) (xr `max` yr)
   | otherwise       =
-    error "union: Should not union disjoint intervals"
+    error "merge Should not merge disjoint intervals"
 
 -- Intervals are sorted my their first element.
 -- There're no overlapping intervals => all interval starts are unique.
@@ -85,6 +91,13 @@ newtype IntervalSet a = IntervalSet { intervals :: [Interval a] }
 
 empty :: IntervalSet a
 empty = IntervalSet []
+
+size :: IntervalSet a -> Integer
+size (IntervalSet xs) = L.genericLength xs
+
+sumIntervals :: (Num a) => IntervalSet a -> a
+sumIntervals (IntervalSet xs) =
+  sum $ map (\x -> intervalEnd x - intervalStart x) xs
 
 null :: IntervalSet a -> Bool
 null = L.null . intervals
@@ -102,12 +115,23 @@ insert x (IntervalSet ys) = IntervalSet $ go x ys
   where
     go x [] = [x]
     go x@(Interval xl _) ys'@(y@(Interval yl _):ys)
-      | isMergeable x y = go (x `union` y) ys
+      | isMergeable x y = go (x `merge` y) ys
       | xl > yl         = y : go x ys
       | otherwise       = x : ys'
 
-insert' :: (Integer, Integer) -> IntervalSet Integer -> IntervalSet Integer
-insert' (x, y) = insert (Interval x y)
+union :: forall a. (Ord a, Countable a) => IntervalSet a -> IntervalSet a -> IntervalSet a
+union (IntervalSet xs) (IntervalSet ys) = IntervalSet $ go xs ys
+  where
+    go :: [Interval a] -> [Interval a] -> [Interval a]
+    go []     ys     = ys
+    go xs     []     = xs
+    go (x:xs) (y:ys)
+      | isMergeable x y = merge x y : go xs ys
+      | x < y           = x : go xs (y : ys)
+      | otherwise       = y : go (x : xs) ys
+
+_insert' :: (Integer, Integer) -> IntervalSet Integer -> IntervalSet Integer
+_insert' (x, y) = insert (Interval x y)
 
 -- Testing
 
@@ -148,18 +172,18 @@ instance (Arbitrary a, Ord a, Countable a) => Arbitrary (IntervalSetListTest a) 
     map (\ys -> IntervalSetListTest ys $ foldr insert empty ys) $ shrink xs
 
 prop_IntervalSetList_Ordered :: (Ord a, Countable a) => IntervalSetListTest a -> Bool
-prop_IntervalSetList_Ordered (IntervalSetListTest xs (IntervalSet ys)) =
+prop_IntervalSetList_Ordered (IntervalSetListTest _ (IntervalSet ys)) =
   isOrdered ys
 
 isOrdered :: (Ord a) => [a] -> Bool
 isOrdered xs = and $ zipWith (<=) xs $ drop 1 xs
 
 prop_IntervalSetList_NoIntersections :: (Ord a, Countable a) => IntervalSetListTest a -> Bool
-prop_IntervalSetList_NoIntersections (IntervalSetListTest xs (IntervalSet ys)) =
+prop_IntervalSetList_NoIntersections (IntervalSetListTest _ (IntervalSet ys)) =
   and (zipWith (\y y' -> not $ isIntersect y y') ys $ drop 1 ys)
 
 prop_IntervalSetList_NoIntervalsNextToEachOther :: (Ord a, Countable a) => IntervalSetListTest a -> Bool
-prop_IntervalSetList_NoIntervalsNextToEachOther (IntervalSetListTest xs (IntervalSet ys)) =
+prop_IntervalSetList_NoIntervalsNextToEachOther (IntervalSetListTest _ (IntervalSet ys)) =
   and (zipWith (\y y' -> countSucc (intervalEnd y) /= intervalStart y') ys $ drop 1 ys)
 
 prop_IntervalSetList_AllElementsPresent :: (Ord a, Countable a) => IntervalSetListTest a -> Bool
