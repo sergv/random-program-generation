@@ -96,6 +96,14 @@ data Fixed a where
   DotProduct :: BigInt -> [Fixed a] -> [Fixed b] -> Fixed (a, b)
   (:$:)      :: (a -> b) -> Fixed a -> Fixed b -- ^ (a -> b) must be a bijection
 
+ppFx :: Fixed a -> String
+ppFx Empty = "Empty"
+ppFx (Singleton _) = "Singleton"
+ppFx (Union n _ _) = "Union, size = " ++ show n
+ppFx (Product n _ _) = "Product, size = " ++ show n
+ppFx (DotProduct n _ _) = "DotProduct, size = " ++ show n
+ppFx (_ :$: x) = "_ :$: (" ++ ppFx x ++ ")"
+
 fxCardinality :: Fixed a -> BigInt
 fxCardinality Empty                 = 0
 fxCardinality (Singleton _)         = 1
@@ -214,8 +222,8 @@ indexAbs n mkEnum = go n 0 (parts $ mkEnum ())
   where
     go :: BigInt -> BigInt -> [Fixed a] -> Either String a
     go _ _ [] = Left "indexAbs: no more parts: index is to large"
-    go n k _
-      | trace ("indexAbs: getting " ++ show n ++ " index in fixed set with " ++ show k ++ " constructors") False = undefined
+    -- go n k _
+      -- | trace ("indexAbs: getting " ++ show n ++ " index in fixed set with " ++ show k ++ " constructors") False = undefined
     go n k (fx:fxs)
       | n < fxCardinality fx = fxIndex fx n
       | otherwise            =
@@ -259,9 +267,9 @@ data Result a =
   | Error String
   deriving (Show, Eq, Ord)
 
-mapIndices :: (BigInt -> BigInt) -> Result a -> Result a
+mapIndices :: ([Interval BigInt] -> [Interval BigInt]) -> Result a -> Result a
 mapIndices _ r@(Ok _)             = r
-mapIndices f (PredicateFailed rs) = PredicateFailed $ map (fmap f) rs
+mapIndices f (PredicateFailed rs) = PredicateFailed $ f rs
 mapIndices _ r@(Error _)          = r
 
 instance Functor Result where
@@ -291,16 +299,27 @@ cross x (DotProduct _ xs ys) = x `cross` dotProduct xs ys
 cross x (f :$: y)            = second f :$: (x `cross` y)
 
 fxIndexPred :: (a -> Bool) -> Fixed a -> BigInt -> Result a
+-- fxIndexPred _ fx n | trace ("fxIndexPred n = " ++ show n ++ ", fx = " ++ ppFx fx) False = undefined
 fxIndexPred _ Empty _ = Error "no elements in empty fixed set"
+-- fxIndexPred _ Empty n = PredicateFailed [mkInterval n n]
 fxIndexPred p (Singleton x) 0
   | p x       = Ok x
   | otherwise = PredicateFailed [mkInterval 0 0]
 fxIndexPred _ (Singleton _) n = Error $ "cannot get " ++ show n ++ "th index in singleton fixed set"
 fxIndexPred p (Union _ x y) n
-  | n < xCard = fxIndexPred p x n
-  | otherwise = mapIndices (+xCard) $! fxIndexPred p y $! n - xCard
+  | n < xCard =
+    fxIndexPred p x n
+    -- case fxIndexPred p x n of
+    --   res@(Ok _) -> res
+    --   -- PredicateFailed _
+    --   --   | trace "fxIndexPred: backtracking" False -> undefined
+    --   PredicateFailed rs ->
+    --     xCard `seq` mapIndices ((++ rs) . map (fmap (+xCard))) $! fxIndexPred p y 0
+    --   Error err -> Error err
+  | otherwise =
+    mapIndices (map (fmap (+xCard))) $! fxIndexPred p y $! n - xCard
   where
-    xCard = fxCardinality x
+    xCard   = fxCardinality x
 fxIndexPred p (Product _ x y) n
   | inspectsRight p = fxIndexPred p (swap :$: cross y x) n
   | otherwise       = fxIndexPred p (cross x y) n
@@ -318,8 +337,8 @@ indexPred idx pred mkEnum = go idx 0 $ parts $ mkEnum ()
   where
     go :: BigInt -> BigInt -> [Fixed a] -> Either String a
     go _ _ [] = Left "indexPred: no more parts: index is to large"
-    go n k _
-      | trace ("indexPred: getting " ++ show n ++ " index in fixed set with " ++ show k ++ " constructors") False = undefined
+    -- go n k _
+    --   | trace ("indexPred: getting " ++ show n ++ " index in fixed set with " ++ show k ++ " constructors") False = undefined
     go n k fxsOrig@(fx:fxs)
       | n < fxCardinality fx =
         case fxIndexPred pred fx n of
@@ -335,19 +354,22 @@ indexPred idx pred mkEnum = go idx 0 $ parts $ mkEnum ()
 
 generateRandomValues :: forall g a. (RandomGen g) => Fixed a -> (a -> Bool) -> g -> BigInt -> [a]
 generateRandomValues fx pred gen tries
-  | card /= 0 = trace ("cardinality = " ++ show card) $ go gen IS.empty tries
+  | card /= 0 = {-trace ("cardinality = " ++ show card) $-} go gen IS.empty tries
   | otherwise = error "cannot generate random values from fixed set with cardinality 0"
   where
     card = fxCardinality fx
-    badIntervalGrowth = 100 -- 00
+    badIntervalGrowth = 0 -- card `div` 2^32 -- 1000
     go :: g -> IntervalSet BigInt -> BigInt -> [a]
-    go _   badIntervals _
-      | trace ("|bad intervals| = " ++ show (IS.size badIntervals) ++ ", |excluded elements| = " ++ show (IS.sumIntervals badIntervals)) False = undefined
+    -- go _ _ tries
+    --  | trace ("#tries = " ++ show tries) False = undefined
+    -- go _   badIntervals _
+    --   | trace ("|bad intervals| = " ++ show (IS.size badIntervals) ++ ", |excluded elements| = " ++ show (IS.sumIntervals badIntervals)) False = undefined
     go _   _            0     = []
     go gen badIntervals tries =
-      case IS.lookup idx badIntervals of
-        Just i  -> tryIdx $ IS.countSucc $ IS.intervalEnd i
-        Nothing -> tryIdx idx
+      tryIdx idx
+      -- case IS.lookup idx badIntervals of
+      --   Just i  -> tryIdx $ IS.countSucc $ IS.intervalEnd i
+      --   Nothing -> tryIdx idx
       where
         (idx, gen') = randomR (0, card) gen
         tries' = tries - 1
@@ -357,7 +379,8 @@ generateRandomValues fx pred gen tries
             Ok x               -> x : go gen' badIntervals tries'
             PredicateFailed rs ->
               let (maybeNewItem, n', rs') = growRightEnd n badIntervalGrowth rs
-                  newIntervals            = IS.insert (mkInterval n n') $ foldr IS.insert badIntervals rs'
+                  -- newIntervals            = IS.insert (mkInterval n n') $ foldr IS.insert badIntervals rs'
+                  newIntervals            = badIntervals
               in case maybeNewItem of
                    Just newItem -> newItem : go gen' newIntervals tries'
                    Nothing      -> go gen' newIntervals tries'

@@ -97,7 +97,7 @@ size (IntervalSet xs) = L.genericLength xs
 
 sumIntervals :: (Num a) => IntervalSet a -> a
 sumIntervals (IntervalSet xs) =
-  sum $ map (\x -> intervalEnd x - intervalStart x) xs
+  sum $ map (\x -> 1 + intervalEnd x - intervalStart x) xs
 
 null :: IntervalSet a -> Bool
 null = L.null . intervals

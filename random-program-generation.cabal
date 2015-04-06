@@ -39,6 +39,7 @@ executable           program-generator
                      -fno-warn-name-shadowing
                      -ferror-spans -rtsopts
                      -main-is RandomProgramGenerator
+                     -- -threaded
   ghc-prof-options:  -fprof-auto
 
 executable           generator

@@ -13,12 +13,16 @@
 module RandomProgramGenerator where
 
 import Control.Applicative
+import Control.Arrow ((&&&))
+import Control.Concurrent
 import Control.Monad
 import Control.Monad.Error
 import Control.Monad.Reader
 import Control.Monad.State
 import Data.Foldable (Foldable)
 import Data.Monoid
+import Data.Map (Map)
+import qualified Data.Map as M
 import Data.Text.Lazy (Text)
 import qualified Data.Text.Lazy.IO as TIO
 import Data.Traversable (Traversable)
@@ -77,6 +81,9 @@ data Function = Function Name [Name] [Statement] Expr -- function name, args, bo
 functionName :: Function -> Name
 functionName (Function name _ _ _) = name
 
+functionArity :: Function -> Int
+functionArity (Function _ args _ _) = length args
+
 data Program = Program Function [Function] -- main function and other functions
   deriving (Show, Eq, Ord)
 
@@ -90,7 +97,7 @@ instance Pretty Expr where
       alg (Var name) = pretty name
       alg (Add x y) = parens $ x <+> "+" <+> y
       alg (Mul x y) = parens $ x <+> "*" <+> y
-      alg (IsTrue x) = cbraces $ x
+      alg (IsTrue x) = lbrace <> x <> rbrace
       alg (If c t f) = parens $ group $ align $ "if" <+> c PP.<$> "then" <+> t PP.<$> "else" <+> f
       alg (Funcall name args) = pretty name <> parens (sep $ punctuate PP.comma args)
 
@@ -103,7 +110,7 @@ instance Pretty Statement where
 
 instance Pretty Function where
   pretty (Function name args body retExpr) =
-    "funciton" <+> pretty name <> parens (sep $ punctuate PP.comma $ map pretty args) <+>
+    "function" <+> pretty name <> parens (sep $ punctuate PP.comma $ map pretty args) <+>
     cbraces (indent 2 $ vsep $ map pretty body ++ ["return" <+> pretty retExpr])
 
 instance Pretty Program where
@@ -111,7 +118,7 @@ instance Pretty Program where
     pretty mainFunc PP.<$> vsep (map pretty funcs)
 
 cbraces :: Doc -> Doc
-cbraces x = lbrace PP.<$> x PP.<$> rbrace
+cbraces x = lbrace PP.<$> indent 2 x PP.<$> rbrace
 
 enumerateList :: Enumeration a -> Enumeration [a]
 enumerateList x = enum
@@ -172,20 +179,21 @@ enumerateProgram _ = Program <$> enumerateFunction <*> enumerateList enumerateFu
 validProgram :: Program -> Bool
 validProgram (Program f fs) =
   allUnique funcNames &&
-  validFunction funcNames' f &&
-  all (validFunction funcNames') fs
+  validFunction funcArities f &&
+  all (validFunction funcArities) fs
   where
     funcNames = functionName f : map functionName fs
-    funcNames' = S.fromList funcNames
+    funcArities :: Map Name Int
+    funcArities = M.fromList $ map (functionName &&& functionArity) $ f : fs
 
 allUnique :: (Ord a) => [a] -> Bool
 allUnique xs = S.size (S.fromList xs) == length xs
 
 
-type CheckM = ErrorT String (ReaderT (Set Name) (State (Set Name)))
+type CheckM = ErrorT String (ReaderT (Map Name Int) (State (Set Name)))
 
-isDefinedFunction :: (MonadReader (Set Name) m) => Name -> m Bool
-isDefinedFunction name = asks (S.member name)
+isDefinedFunction :: (MonadReader (Map Name Int) m) => Name -> m (Maybe Int)
+isDefinedFunction name = asks (M.lookup name)
 
 addDeclaredVariable :: (MonadState (Set Name) m) => Name -> m ()
 addDeclaredVariable name = modify (S.insert name)
@@ -193,15 +201,16 @@ addDeclaredVariable name = modify (S.insert name)
 isDeclaredVariable :: (MonadState (Set Name) m) => Name -> m Bool
 isDeclaredVariable name = gets (S.member name)
 
-validFunction :: Set Name -> Function -> Bool
-validFunction funcNames (Function _ args body ret) =
+validFunction :: Map Name Int -> Function -> Bool
+validFunction arities (Function _ args body ret) =
+  allUnique args &&
   either (const False) (const True) res
   where
     res :: Either String ()
     res = evalState
             (runReaderT
                (runErrorT go)
-               funcNames)
+               arities)
             (S.fromList args)
     go = mapM_ checkStatement body >> checkExpr ret
 
@@ -232,31 +241,58 @@ checkExpr = cataM alg
     alg (Mul _ _)        = return ()
     alg (IsTrue _)       = return ()
     alg (If _c _t _f)    = return ()
-    alg (Funcall name _) = do
-      defined <- isDefinedFunction name
-      unless defined $
-        throwError $ "call to unknown function " ++ show name
+    alg (Funcall name args) = do
+      arity <- isDefinedFunction name
+      case arity of
+        Nothing -> throwError $ "call to unknown function " ++ show name
+        Just n
+          | n == length args -> return ()
+          | otherwise        -> throwError $ "function " ++ show name ++ " called with wrong number of arguments"
+
 
 display :: (Pretty a) => a -> Text
 display = PP.displayT . renderPretty 0.9 100 . pretty
+
+printChan :: (Pretty a) => Chan a -> IO ()
+printChan chan = do
+  x <- readChan chan
+  TIO.putStrLn $ display x
+  printChan chan
 
 main :: IO ()
 main = do
   args <- getArgs
   putStrLn "Functions:"
   -- res <- timeout (10 * 10000) $
-  mapM_ (TIO.putStrLn . display) $
-    case args of
-      -- [n]    -> putStrLn $ show $ indexAbs (read n) boolLists
-      -- [p, q] -> putStrLn $ show $ indexAbs (read p ^ read q) boolLists
-      [n]    -> generateRandomValues (parts (enumerateProgram ()) !! read n) validProgram mt 1000000
-      [p, q] -> generateRandomValues (parts (enumerateProgram ()) !! read p) validProgram mt (read q)
-      _      -> error $ "invalid arguments: " ++ unwords args
+  case args of
+    -- [n]    -> putStrLn $ show $ indexAbs (read n) boolLists
+    -- [p, q] -> putStrLn $ show $ indexAbs (read p ^ read q) boolLists
+    [n]    -> do
+      let mt =  pureMT 1
+      mapM_ (TIO.putStrLn . display) $
+        generateRandomValues (parts (enumerateProgram ()) !! read n) validProgram mt 1000000
+    [p, q] -> do
+      caps <- getNumCapabilities
+      let mts = map (pureMT . fromIntegral) [1..caps]
+      putStrLn $ "starting " ++ show caps ++ " threads"
+      chan <- newChan
+      let enums = parts (enumerateProgram ()) !! read p
+        in forM_ mts $ \mt ->
+             forkIO $
+               forM_ (generateRandomValues enums validProgram mt (read q)) $ \x ->
+                 writeChan chan x
+
+      printChan chan
+
+    [p, q, seed] -> do
+      let mt = pureMT $ read seed
+      mapM_ (TIO.putStrLn . display) $
+        generateRandomValues (parts (enumerateProgram ()) !! read p) validProgram mt (read q)
+
+    _      -> error $ "invalid arguments: " ++ unwords args
   -- case res of
   --   Nothing -> putStrLn "timed out"
   --   _       -> return ()
-  where
-    mt = pureMT 1
 
 -- main :: IO ()
 -- main = do
