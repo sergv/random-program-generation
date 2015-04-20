@@ -6,7 +6,7 @@
 
 {-# OPTIONS_GHC -funbox-strict-fields #-}
 
-module Generator where
+module SortedListGenerator where
 
 import Control.Applicative
 import Control.Monad
