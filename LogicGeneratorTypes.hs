@@ -53,17 +53,24 @@ data Name
 data NameF :: (* -> *) -> (* -> *) where
   NameF :: Int -> NameF h Name
 
+iNameF :: (NameF :<: h) => Int -> Term h Name
+iNameF = inject . NameF
+
 instance HEq (NameF h) where
+  {-# INLINABLE heq #-}
   heq (NameF x) (NameF y) = x == y
 
 instance HEqHet (NameF h) where
+  {-# INLINABLE heqIx #-}
   heqIx (NameF _) (NameF _) = Just Refl
 
 instance HOrd (NameF h) where
+  {-# INLINABLE hcompare #-}
   hcompare (NameF x) (NameF y) = compare x y
 
 instance HOrdHet (NameF h) where
-  hcompareIx (NameF _) (NameF _) = HEQ Refl
+  {-# INLINABLE hcompareIx #-}
+  hcompareIx (NameF _) (NameF _) = {-# SCC hcompareIx_type_NameF #-} HEQ
 
 
 instance HFunctorId NameF where
@@ -93,16 +100,20 @@ instance (ix ~ Name) => TypeI (NameF h) ix where
   singType = TName
 
 instance HEq (Type (NameF h)) where
+  {-# INLINABLE heq #-}
   heq TName TName = True
 
 instance HEqHet (Type (NameF h)) where
+  {-# INLINABLE heqIx #-}
   heqIx TName TName = Just Refl
 
 instance HOrd (Type (NameF h)) where
+  {-# INLINABLE hcompare #-}
   hcompare TName TName = EQ
 
 instance HOrdHet (Type (NameF h)) where
-  hcompareIx TName TName = HEQ Refl
+  {-# INLINABLE hcompareIx #-}
+  hcompareIx TName TName = {-# SCC hcompareIx_type_TName #-} HEQ
 
 -- Expressions
 
@@ -116,13 +127,36 @@ data ExprF h ix where
   If      :: h Expr -> h Expr -> h Expr -> ExprF h Expr
   Funcall :: h Name -> h (List Expr) -> ExprF h Expr
 
-deriving instance (Eq (h Expr), Eq (h Name), Eq (h (List Expr))) => (Eq (ExprF h ix))
-deriving instance (Ord (h Expr), Ord (h Name), Ord (h (List Expr))) => (Ord (ExprF h ix))
+iVar :: (ExprF :<: h) => Term h Name -> Term h Expr
+iVar = inject . Var
 
-instance (Eq (h Expr), Eq (h Name), Eq (h (List Expr))) => HEq (ExprF h) where
-  heq = (==)
+iAdd :: (ExprF :<: h) => Term h Expr -> Term h Expr -> Term h Expr
+iAdd x y = inject $ Add x y
 
-instance HEqHet (ExprF h) where
+iMul :: (ExprF :<: h) => Term h Expr -> Term h Expr -> Term h Expr
+iMul x y = inject $ Mul x y
+
+iIsTrue :: (ExprF :<: h) => Term h Expr -> Term h Expr
+iIsTrue = inject . IsTrue
+
+iIf :: (ExprF :<: h) => Term h Expr -> Term h Expr -> Term h Expr -> Term h Expr
+iIf c t f = inject $ If c t f
+
+iFuncall :: (ExprF :<: h) => Term h Name -> Term h (List Expr) -> Term h Expr
+iFuncall f xs = inject $ Funcall f xs
+
+instance (HEq h) => HEq (ExprF h) where
+  {-# INLINABLE heq #-}
+  heq (Var x)        (Var x')         = heq x x'
+  heq (Add x y)      (Add x' y')      = heq x x' && heq y y'
+  heq (Mul x y)      (Mul x' y')      = heq x x' && heq y y'
+  heq (IsTrue x)     (IsTrue x')      = heq x x'
+  heq (If c t f)     (If c' t' f')    = heq c c' && heq t t' && heq f f'
+  heq (Funcall f xs) (Funcall f' xs') = heq f f' && heq xs xs'
+  heq _              _                = False
+
+instance (HEq h) => HEqHet (ExprF h) where
+  {-# INLINABLE heqIx #-}
   heqIx (Var _) (Var _)       = Just Refl
   heqIx (Var _) (Add _ _)     = Just Refl
   heqIx (Var _) (Mul _ _)     = Just Refl
@@ -165,55 +199,82 @@ instance HEqHet (ExprF h) where
   heqIx (Funcall _ _) (If _ _ _)    = Just Refl
   heqIx (Funcall _ _) (Funcall _ _) = Just Refl
 
-instance (Ord (h Expr), Ord (h Name), Ord (h (List Expr))) => HOrd (ExprF h) where
-  hcompare = compare
+instance (HOrd h) => HOrd (ExprF h) where
+  {-# INLINABLE hcompare #-}
+  hcompare (Var x)        (Var x')         = hcompare x x'
+  hcompare (Var _)        _                = LT
+  hcompare (Add _ _)      (Var _)          = GT
+  hcompare (Add x y)      (Add x' y')      = hcompare x x' <> hcompare y y'
+  hcompare (Add _ _)      _                = LT
+  hcompare (Mul _ _)      (Var _)          = GT
+  hcompare (Mul _ _)      (Add _ _)        = GT
+  hcompare (Mul x y)      (Mul x' y')      = hcompare x x' <> hcompare y y'
+  hcompare (Mul _ _)      _                = GT
+  hcompare (IsTrue _)     (Var _)          = GT
+  hcompare (IsTrue _)     (Add _ _)        = GT
+  hcompare (IsTrue _)     (Mul _ _)        = GT
+  hcompare (IsTrue x)     (IsTrue x')      = hcompare x x'
+  hcompare (IsTrue _)     _                = LT
+  hcompare (If _ _ _)     (Var _)          = GT
+  hcompare (If _ _ _)     (Add _ _)        = GT
+  hcompare (If _ _ _)     (Mul _ _)        = GT
+  hcompare (If _ _ _)     (IsTrue _)       = GT
+  hcompare (If c t f)     (If c' t' f')    = hcompare c c' <> hcompare t t' <> hcompare f f'
+  hcompare (If _ _ _)     (Funcall _ _)    = GT
+  hcompare (Funcall f xs) (Funcall f' xs') = hcompare f f' <> hcompare xs xs'
+  hcompare (Funcall _ _)  _                = GT
 
-instance HOrdHet (ExprF h) where
-  hcompareIx (Var _) (Var _)       = HEQ Refl
-  hcompareIx (Var _) (Add _ _)     = HGT
-  hcompareIx (Var _) (Mul _ _)     = HGT
-  hcompareIx (Var _) (IsTrue _)    = HGT
-  hcompareIx (Var _) (If _ _ _)    = HGT
-  hcompareIx (Var _) (Funcall _ _) = HGT
 
-  hcompareIx (Add _ _) (Var _)       = HLT
-  hcompareIx (Add _ _) (Add _ _)     = HEQ Refl
-  hcompareIx (Add _ _) (Mul _ _)     = HGT
-  hcompareIx (Add _ _) (IsTrue _)    = HGT
-  hcompareIx (Add _ _) (If _ _ _)    = HGT
-  hcompareIx (Add _ _) (Funcall _ _) = HGT
+instance (HOrd h) => HOrdHet (ExprF h) where
+  {-# INLINABLE hcompareIx #-}
+  hcompareIx x y = {-# SCC hcompareIx_type_ExprF #-} go x y
+    where
+      go :: ExprF h ix -> ExprF h ix' -> HOrdering ix ix'
+      go (Var _) (Var _)       = HEQ
+      go (Var _) (Add _ _)     = HGT
+      go (Var _) (Mul _ _)     = HGT
+      go (Var _) (IsTrue _)    = HGT
+      go (Var _) (If _ _ _)    = HGT
+      go (Var _) (Funcall _ _) = HGT
 
-  hcompareIx (Mul _ _) (Var _)       = HLT
-  hcompareIx (Mul _ _) (Add _ _)     = HLT
-  hcompareIx (Mul _ _) (Mul _ _)     = HEQ Refl
-  hcompareIx (Mul _ _) (IsTrue _)    = HGT
-  hcompareIx (Mul _ _) (If _ _ _)    = HGT
-  hcompareIx (Mul _ _) (Funcall _ _) = HGT
+      go (Add _ _) (Var _)       = HLT
+      go (Add _ _) (Add _ _)     = HEQ
+      go (Add _ _) (Mul _ _)     = HGT
+      go (Add _ _) (IsTrue _)    = HGT
+      go (Add _ _) (If _ _ _)    = HGT
+      go (Add _ _) (Funcall _ _) = HGT
 
-  hcompareIx (IsTrue _) (Var _)       = HLT
-  hcompareIx (IsTrue _) (Add _ _)     = HLT
-  hcompareIx (IsTrue _) (Mul _ _)     = HLT
-  hcompareIx (IsTrue _) (IsTrue _)    = HEQ Refl
-  hcompareIx (IsTrue _) (If _ _ _)    = HGT
-  hcompareIx (IsTrue _) (Funcall _ _) = HGT
+      go (Mul _ _) (Var _)       = HLT
+      go (Mul _ _) (Add _ _)     = HLT
+      go (Mul _ _) (Mul _ _)     = HEQ
+      go (Mul _ _) (IsTrue _)    = HGT
+      go (Mul _ _) (If _ _ _)    = HGT
+      go (Mul _ _) (Funcall _ _) = HGT
 
-  hcompareIx (If _ _ _) (Var _)       = HLT
-  hcompareIx (If _ _ _) (Add _ _)     = HLT
-  hcompareIx (If _ _ _) (Mul _ _)     = HLT
-  hcompareIx (If _ _ _) (IsTrue _)    = HLT
-  hcompareIx (If _ _ _) (If _ _ _)    = HEQ Refl
-  hcompareIx (If _ _ _) (Funcall _ _) = HGT
+      go (IsTrue _) (Var _)       = HLT
+      go (IsTrue _) (Add _ _)     = HLT
+      go (IsTrue _) (Mul _ _)     = HLT
+      go (IsTrue _) (IsTrue _)    = HEQ
+      go (IsTrue _) (If _ _ _)    = HGT
+      go (IsTrue _) (Funcall _ _) = HGT
 
-  hcompareIx (Funcall _ _) (Var _)       = HLT
-  hcompareIx (Funcall _ _) (Add _ _)     = HLT
-  hcompareIx (Funcall _ _) (Mul _ _)     = HLT
-  hcompareIx (Funcall _ _) (IsTrue _)    = HLT
-  hcompareIx (Funcall _ _) (If _ _ _)    = HLT
-  hcompareIx (Funcall _ _) (Funcall _ _) = HEQ Refl
+      go (If _ _ _) (Var _)       = HLT
+      go (If _ _ _) (Add _ _)     = HLT
+      go (If _ _ _) (Mul _ _)     = HLT
+      go (If _ _ _) (IsTrue _)    = HLT
+      go (If _ _ _) (If _ _ _)    = HEQ
+      go (If _ _ _) (Funcall _ _) = HGT
+
+      go (Funcall _ _) (Var _)       = HLT
+      go (Funcall _ _) (Add _ _)     = HLT
+      go (Funcall _ _) (Mul _ _)     = HLT
+      go (Funcall _ _) (IsTrue _)    = HLT
+      go (Funcall _ _) (If _ _ _)    = HLT
+      go (Funcall _ _) (Funcall _ _) = HEQ
 
 
 instance HFunctorId ExprF where
-  hfmapId _ (Var x)        = Var x
+  hfmapId g (Var x)        = Var (g x)
   hfmapId g (Add x y)      = Add (g x) (g y)
   hfmapId g (Mul x y)      = Mul (g x) (g y)
   hfmapId g (IsTrue x)     = IsTrue (g x)
@@ -221,7 +282,7 @@ instance HFunctorId ExprF where
   hfmapId g (Funcall f xs) = Funcall (g f) (g xs)
 
 instance HFoldable ExprF where
-  hfoldMap _ (Var _)        = mempty
+  hfoldMap g (Var x)        = g x
   hfoldMap g (Add x y)      = g x <> g y
   hfoldMap g (Mul x y)      = g x <> g y
   hfoldMap g (IsTrue x)     = g x
@@ -287,16 +348,20 @@ instance (ix ~ Expr) => TypeI (ExprF h) ix where
   singType = TExpr
 
 instance HEq (Type (ExprF h)) where
+  {-# INLINABLE heq #-}
   heq TExpr TExpr = True
 
 instance HEqHet (Type (ExprF h)) where
+  {-# INLINABLE heqIx #-}
   heqIx TExpr TExpr = Just Refl
 
 instance HOrd (Type (ExprF h)) where
+  {-# INLINABLE hcompare #-}
   hcompare TExpr TExpr = EQ
 
 instance HOrdHet (Type (ExprF h)) where
-  hcompareIx TExpr TExpr = HEQ Refl
+  {-# INLINABLE hcompareIx #-}
+  hcompareIx TExpr TExpr = {-# SCC hcompareIx_type_TExpr #-} HEQ
 
 -- Statements
 
@@ -307,14 +372,26 @@ data StatementF h ix where
   Assignment  :: h Name -> h Expr -> StatementF h Statement
   While       :: h Expr -> h (List Statement) -> StatementF h Statement
 
-deriving instance (Eq (h Name), Eq (h (List Statement)), Eq (h Expr)) => Eq (StatementF h ix)
-deriving instance (Ord (h Name), Ord (h (List Statement)), Ord (h Expr)) => Ord (StatementF h ix)
+iDeclaration :: (StatementF :<: h) => Term h Name -> Term h Statement
+iDeclaration = inject . Declaration
+
+iAssignment :: (StatementF :<: h) => Term h Name -> Term h Expr -> Term h Statement
+iAssignment x y = inject $ Assignment x y
+
+iWhile :: (StatementF :<: h) => Term h Expr -> Term h (List Statement) -> Term h Statement
+iWhile cond body = inject $ While cond body
 
 
-instance (Eq (h Name), Eq (h (List Statement)), Eq (h Expr)) => HEq (StatementF h) where
-  heq = (==)
+instance (HEq h) => HEq (StatementF h) where
+  {-# INLINABLE heq #-}
+  heq (Declaration x)   (Declaration x')    = heq x x'
+  heq (Assignment x y)  (Assignment x' y')  = heq x x' && heq y y'
+  heq (While cond body) (While cond' body') = heq cond cond' && heq body body'
+  heq _                 _                   = False
 
-instance HEqHet (StatementF h) where
+
+instance (HEq h) => HEqHet (StatementF h) where
+  {-# INLINABLE heqIx #-}
   heqIx (Declaration _)  (Declaration _)  = Just Refl
   heqIx (Declaration _)  (Assignment _ _) = Just Refl
   heqIx (Declaration _)  (While _ _)      = Just Refl
@@ -325,19 +402,30 @@ instance HEqHet (StatementF h) where
   heqIx (While _ _)      (Assignment _ _) = Just Refl
   heqIx (While _ _)      (While _ _)      = Just Refl
 
-instance (Ord (h Name), Ord (h (List Statement)), Ord (h Expr)) => HOrd (StatementF h) where
-  hcompare = compare
+instance (HOrd h) => HOrd (StatementF h) where
+  {-# INLINABLE hcompare #-}
+  hcompare (Declaration x)   (Declaration x')    = hcompare x x'
+  hcompare (Declaration _)   _                   = LT
+  hcompare (Assignment _ _)  (Declaration _)     = GT
+  hcompare (Assignment x y)  (Assignment x' y')  = hcompare x x' <> hcompare y y'
+  hcompare (Assignment _ _)  (While _ _)         = LT
+  hcompare (While cond body) (While cond' body') = hcompare cond cond' <> hcompare body body'
+  hcompare (While _ _)       _                   = GT
 
-instance HOrdHet (StatementF h) where
-  hcompareIx (Declaration _)  (Declaration _)  = HEQ Refl
-  hcompareIx (Declaration _)  (Assignment _ _) = HGT
-  hcompareIx (Declaration _)  (While _ _)      = HGT
-  hcompareIx (Assignment _ _) (Declaration _)  = HLT
-  hcompareIx (Assignment _ _) (Assignment _ _) = HEQ Refl
-  hcompareIx (Assignment _ _) (While _ _)      = HGT
-  hcompareIx (While _ _)      (Declaration _)  = HLT
-  hcompareIx (While _ _)      (Assignment _ _) = HLT
-  hcompareIx (While _ _)      (While _ _)      = HEQ Refl
+instance (HOrd h) => HOrdHet (StatementF h) where
+  {-# INLINABLE hcompareIx #-}
+  hcompareIx x y = {-# SCC hcompareIx_type_StatementF #-} go x y
+    where
+      go :: StatementF h ix -> StatementF h ix' -> HOrdering ix ix'
+      go (Declaration _)  (Declaration _)  = HEQ
+      go (Declaration _)  (Assignment _ _) = HGT
+      go (Declaration _)  (While _ _)      = HGT
+      go (Assignment _ _) (Declaration _)  = HLT
+      go (Assignment _ _) (Assignment _ _) = HEQ
+      go (Assignment _ _) (While _ _)      = HGT
+      go (While _ _)      (Declaration _)  = HLT
+      go (While _ _)      (Assignment _ _) = HLT
+      go (While _ _)      (While _ _)      = HEQ
 
 instance HFunctorId StatementF where
   hfmapId f (Declaration x)  = Declaration (f x)
@@ -384,16 +472,20 @@ instance (ix ~ Statement) => TypeI (StatementF h) ix where
   singType = TStatement
 
 instance HEq (Type (StatementF h)) where
+  {-# INLINABLE heq #-}
   heq TStatement TStatement = True
 
 instance HEqHet (Type (StatementF h)) where
+  {-# INLINABLE heqIx #-}
   heqIx TStatement TStatement = Just Refl
 
 instance HOrd (Type (StatementF h)) where
+  {-# INLINABLE hcompare #-}
   hcompare TStatement TStatement = EQ
 
 instance HOrdHet (Type (StatementF h)) where
-  hcompareIx TStatement TStatement = HEQ Refl
+  {-# INLINABLE hcompareIx #-}
+  hcompareIx TStatement TStatement = {-# SCC hcompareIx_type_StatementF #-} HEQ
 
 -- Functions
 
@@ -402,19 +494,32 @@ data Function
 data FunctionF h ix where
   Function :: h Name -> h (List Name) -> h (List Statement) -> h Expr -> FunctionF h Function
 
+iFunction
+  :: (FunctionF :<: h)
+  => Term h Name
+  -> Term h (List Name)
+  -> Term h (List Statement)
+  -> Term h Expr
+  -> Term h Function
+iFunction name args body retExpr = inject $ Function name args body retExpr
+
 instance (HEq h) => HEq (FunctionF h) where
+  {-# INLINABLE heq #-}
   heq (Function x y z w) (Function x' y' z' w') =
     heq x x' && heq y y' && heq z z' && heq w w'
 
-instance HEqHet (FunctionF h) where
+instance (HEq h) => HEqHet (FunctionF h) where
+  {-# INLINABLE heqIx #-}
   heqIx (Function _ _ _ _) (Function _ _ _ _) = Just Refl
 
 instance (HOrd h) => HOrd (FunctionF h) where
+  {-# INLINABLE hcompare #-}
   hcompare (Function x y z w) (Function x' y' z' w') =
     hcompare x x' <> hcompare y y' <> hcompare z z' <> hcompare w w'
 
-instance HOrdHet (FunctionF h) where
-  hcompareIx (Function _ _ _ _) (Function _ _ _ _) = HEQ Refl
+instance (HOrd h) => HOrdHet (FunctionF h) where
+  {-# INLINABLE hcompareIx #-}
+  hcompareIx (Function _ _ _ _) (Function _ _ _ _) = {-# SCC hcompareIx_type_Function #-} HEQ
 
 
 instance HFunctorId FunctionF where
@@ -435,7 +540,7 @@ instance (HShow h) => HShow (FunctionF h) where
 
 instance (HPretty h, ReifyList h h) => HPretty (FunctionF h) where
   hpretty (Function name args body retExpr) =
-    "function" <+> hpretty name <> parens (sep $ punctuate PP.comma $ map hpretty $ reifyList args) <+>
+    "function" <+> hpretty name <> parens (align (sep $ punctuate PP.comma $ map hpretty $ reifyList args)) <+>
     cbraces (PP.indent 2 $ vsep $ map hpretty (reifyList body) ++ ["return" <+> hpretty retExpr])
 
 cbraces :: Doc -> Doc
@@ -457,16 +562,20 @@ instance (ix ~ Function) => TypeI (FunctionF h) ix where
   singType = TFunction
 
 instance HEq (Type (FunctionF h)) where
+  {-# INLINABLE heq #-}
   heq TFunction TFunction = True
 
 instance HEqHet (Type (FunctionF h)) where
+  {-# INLINABLE heqIx #-}
   heqIx TFunction TFunction = Just Refl
 
 instance HOrd (Type (FunctionF h)) where
+  {-# INLINABLE hcompare #-}
   hcompare TFunction TFunction = EQ
 
 instance HOrdHet (Type (FunctionF h)) where
-  hcompareIx TFunction TFunction = HEQ Refl
+  {-# INLINABLE hcompareIx #-}
+  hcompareIx TFunction TFunction = {-# SCC hcompareIx_type_TFunction #-} HEQ
 
 -- Main functor
 
