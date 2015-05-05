@@ -25,7 +25,7 @@
 
 module RandomProgramGeneratorLogic where
 
-import Control.Monad (forM_)
+import Control.Monad (forM_, when)
 import qualified Control.Monad as Monad
 import Data.HUtils
 import Data.String
@@ -33,198 +33,381 @@ import Data.Text.Lazy (Text)
 import qualified Data.Text.Lazy as T
 import qualified Data.Text.Lazy.IO as TIO
 import Language.HKanren.Functions.List
+import Language.HKanren.Functions.Nat
 import Language.HKanren.Syntax
 import Language.HKanren.Types.List
+import Language.HKanren.Types.Nat
 import System.Environment
 import Text.PrettyPrint.Leijen.Text (Pretty)
 import qualified Text.PrettyPrint.Leijen.Text as PP
 
-import Data.List (genericLength, zip)
+import Data.List (genericLength, zip, null)
 import Prelude (IO, return, fail, ($), fromInteger, read, (.), fromRational, show, (++), putStrLn)
 
 import LogicGeneratorTypes
 
 import Debug.Trace
-import Data.List (intercalate)
 
--- redefine the syntax
-(>>) :: Predicate ProgramF -> Predicate ProgramF -> Predicate ProgramF
-(>>) = conj
+argVars :: Program (List Name)
+argVars = list [iNameF 1, iNameF 2, iNameF 3]
 
-(>>=) :: (TypeI (ProgramF Program) ix)
-      => Fresh ix
-      -> (Term ProgramF ix -> Predicate ProgramF)
-      -> Predicate ProgramF
-(>>=) = fresh
-
-validFunction :: Program Function -> Predicate ProgramF
+validFunction :: Program Function -> Predicate ProgramVar
 validFunction prog =
-  manyFresh $ \name args body retExpr -> do
-    args === vars
+  fresh $ \name args body retExpr declaredVars -> do
+    args === argVars
     prog ==^ Function name args body retExpr
-    declaredVars <- Fresh
     let knownFuncs = iCons name iNil
-    foldlo (\x -> validStatement x knownFuncs) args body declaredVars
+    validStatement args knownFuncs body declaredVars
     validExpression declaredVars knownFuncs retExpr
     allUnique args
-  where
-    vars :: Program (List Name)
-    vars = list [iNameF 1, iNameF 2, iNameF 3]
 
-validFunction' :: Program Function -> Predicate ProgramF
+validFunction' :: Program Function -> Predicate ProgramVar
 validFunction' prog =
-  manyFresh $ \name args retExpr -> do
-    args === vars
-    prog ==^ Function name args iNil retExpr
+  fresh $ \name args body retExpr -> do
+    args === argVars
+    prog ==^ Function name args body retExpr
     let knownFuncs = iCons name iNil
     validExpression args knownFuncs retExpr
     allUnique args
   where
-    vars :: Program (List Name)
-    vars = list [iNameF 1, iNameF 2, iNameF 3]
+    argVars :: Program (List Name)
+    argVars = list [iNameF 1, iNameF 2]
 
 validStatement
   :: Program (List Name)
   -> Program (List Name)
   -> Program Statement
   -> Program (List Name)
-  -> Predicate ProgramF
-validStatement vars knownFuncs stmt outVars =
+  -> Predicate ProgramVar
+validStatement argVars knownFuncs stmt outVars =
   conde
-    (manyFresh $ \name -> do
-       stmt ==^ Declaration name
-       isUndeclaredVariable name vars
-       outVars ==^ Cons name vars)
-    (manyFresh $ \name expr -> do
-       stmt ==^ Assignment name expr
-       isDeclaredVariable name vars
-       validExpression outVars knownFuncs expr
-       outVars === outVars)
-    (manyFresh $ \cond body -> do
+    -- (fresh $ \name -> do
+    --   stmt ==^ Declaration name
+    --   isUndeclaredVariable name argVars
+    --   outVars ==^ Cons name argVars)
+    (fresh $ \stmts -> do
+      stmt ==^ Block stmts
+      foldlo' argVars stmts outVars $ \acc x out ->
+        validStatement acc knownFuncs x out)
+    (fresh $ \name expr -> do
+      stmt ==^ Assignment name expr
+      isDeclaredVariable name argVars
+      validExpression argVars knownFuncs expr
+      outVars ==^ Cons name argVars)
+    (fresh $ \cond body -> do
       stmt ==^ While cond body
-      validExpression outVars knownFuncs cond
-      foldlo (\x -> validStatement x knownFuncs) vars body outVars)
+      validExpression argVars knownFuncs cond
+      validStatement argVars knownFuncs body outVars)
 
 validExpression
   :: Program (List Name)
   -> Program (List Name)
   -> Program Expr
-  -> Predicate ProgramF
-validExpression vars knownFuncs expr =
+  -> Predicate ProgramVar
+validExpression argVars knownFuncs expr =
   conde
-    (manyFresh $ \name -> do
+    (fresh $ \name -> do
       expr ==^ Var name
-      isDeclaredVariable name vars)
-    (manyFresh $ \x y -> do
+      isDeclaredVariable name argVars)
+    (fresh $ \x y -> do
       expr ==^ Add x y
-      validExpression vars knownFuncs x
-      validExpression vars knownFuncs y)
-    (manyFresh $ \x y -> do
+      validExpression argVars knownFuncs x
+      validExpression argVars knownFuncs y)
+    (fresh $ \x y -> do
       expr ==^ Mul x y
-      validExpression vars knownFuncs x
-      validExpression vars knownFuncs y)
-    (manyFresh $ \x -> do
+      validExpression argVars knownFuncs x
+      validExpression argVars knownFuncs y)
+    (fresh $ \x -> do
       expr ==^ IsTrue x
-      validExpression vars knownFuncs x)
-    (manyFresh $ \c t f -> do
+      validExpression argVars knownFuncs x)
+    (fresh $ \c t f -> do
       expr ==^ If c t f
-      validExpression vars knownFuncs c
-      validExpression vars knownFuncs t
-      validExpression vars knownFuncs f)
-    -- (manyFresh $ \name args -> do
+      validExpression argVars knownFuncs c
+      validExpression argVars knownFuncs t
+      validExpression argVars knownFuncs f)
+    -- (fresh $ \name args -> do
     --   expr ==^ Funcall name args
     --   member name knownFuncs
-    --   allo (validExpression vars knownFuncs) args)
+    --   allo (validExpression argVars knownFuncs) args)
+
+statementSize
+  :: Program Statement
+  -> Program Nat
+  -> Predicate ProgramVar
+statementSize stmt n =
+  conde
+    (fresh $ \name expr m -> do
+      stmt ==^ Assignment name expr
+      n ==^ S m
+      exprSize expr m)
+    (fresh $ \stmts k -> do
+      stmt ==^ Block stmts
+      plus1 k n
+      foldlo' iZ stmts k $ \acc x out -> do
+        xSize <- statementSize x
+        pluso acc xSize out)
+    (fresh $ \cond body m k mk -> do
+      stmt ==^ While cond body
+      n ==^ S (iS mk)
+      exprSize cond m
+      statementSize body k
+      pluso m k mk)
+
+exprSize
+  :: Program Expr
+  -> Program Nat
+  -> Predicate ProgramVar
+exprSize expr n = do
+  n =/^ Z
+  conde
+    (fresh $ \name -> do
+      expr ==^ Var name
+      n    ==^ S iZ)
+    (fresh $ \x y -> do
+      expr ==^ Add x y
+      m <- exprSize x
+      k <- exprSize y
+      pluso m k n)
+    (fresh $ \x y -> do
+      expr ==^ Mul x y
+      m <- exprSize x
+      k <- exprSize y
+      pluso m k n)
+    (fresh $ \x -> do
+      expr ==^ IsTrue x
+      m <- exprSize x
+      plus1 m n)
+    (fresh $ \c t f -> do
+      expr ==^ If c t f
+      m <- exprSize c
+      k <- exprSize t
+      q <- exprSize f
+      plus3o m k q n)
+    -- (fresh $ \name args -> do
+    --   expr ==^ Funcall name args
+    --   member name knownFuncs
+    --   allo (validExpression argVars knownFuncs) args)
+
+validSizedFunctionNaive :: Program Nat -> Program Function -> Predicate ProgramVar
+validSizedFunctionNaive n prog =
+  fresh $ \name args body retExpr bodySize retSize declaredVars -> do
+    args === argVars
+    prog ==^ Function name args body retExpr
+    bodyPlusRetSize <- pluso bodySize retSize
+    plus1 bodyPlusRetSize n
+    statementSize body bodySize
+    exprSize retExpr retSize
+    let knownFuncs = iCons name iNil
+    validStatement args knownFuncs body declaredVars
+    validExpression declaredVars knownFuncs retExpr
+    allUnique args
+
+
+validSizedFunction :: Program Nat -> Program Function -> Predicate ProgramVar
+validSizedFunction n prog =
+  fresh $ \name args body retExpr bodySize retSize declaredVars m -> do
+    args === argVars
+    prog ==^ Function name args body retExpr
+
+    let knownFuncs = iCons name iNil
+    plus1 m n
+    m =/^ Z
+    pluso bodySize retSize m
+    bodySize =/^ Z
+    retSize  =/^ Z
+    validSizedBlock args knownFuncs body declaredVars bodySize
+    validSizedExpression declaredVars knownFuncs retExpr retSize
+    allUnique args
+
+validSizedBlock
+  :: Program (List Name)
+  -> Program (List Name)
+  -> Program Statement
+  -> Program (List Name)
+  -> Program Nat
+  -> Predicate ProgramVar
+validSizedBlock argVars knownFuncs stmt outVars outSize = do
+  (fresh $ \stmts k -> do
+    stmt ==^ Block stmts
+    k =/^ Z
+    plus1 k outSize
+    foldl2o' argVars iZ stmts outVars k $ \vars size x vars' size' -> do
+      fresh $ \m -> do
+        m =/^ Z
+          trace ("validSizedBlock: Block 5, size = " ++ display size') success
+        pluso m size size'
+          trace ("validSizedBlock: Block 6, m = " ++ display m') success
+        validSizedStatement vars knownFuncs x vars' m)
+
+validSizedStatement
+  :: Program (List Name)
+  -> Program (List Name)
+  -> Program Statement
+  -> Program (List Name)
+  -> Program Nat
+  -> Predicate ProgramVar
+validSizedStatement argVars knownFuncs stmt outVars outSize = do
+  outSize =/^ Z
+  conde
+    -- (fresh $ \name -> do
+    --   stmt ==^ Declaration name
+    --   isUndeclaredVariable name argVars
+    --   outVars ==^ Cons name argVars)
+    (fresh $ \name expr m -> do
+      stmt    ==^ Assignment name expr
+      m       =/^ Z
+      plus1 m outSize
+      isDeclaredVariable name argVars
+      validSizedExpression argVars knownFuncs expr m
+      outVars ==^ Cons name argVars)
+    -- (fresh $ \cond body bodySize -> do
+    --   stmt ==^ While cond body
+    --   condSize <- validSizedExpression argVars knownFuncs cond
+    --   foldl2o' argVars iZ body outVars bodySize $ \vars size x outVars outSize -> do
+    --     stmtSize <- validSizedBlock vars knownFuncs x outVars
+    --     pluso size stmtSize outSize
+    --   m <- pluso condSize bodySize
+    --   outSize ==^ S (iS m))
+
+
+validSizedExpression
+  :: Program (List Name)
+  -> Program (List Name)
+  -> Program Expr
+  -> Program Nat
+  -> Predicate ProgramVar
+validSizedExpression argVars knownFuncs expr outSize = do
+  conde
+    (fresh $ \name -> do
+      expr    ==^ Var name
+      isDeclaredVariable name argVars
+      outSize ==^ S iZ)
+    (fresh $ \x y xSize ySize -> do
+      expr  ==^ Add x y
+      pluso xSize ySize outSize
+      xSize =/^ Z
+      ySize =/^ Z
+      validSizedExpression argVars knownFuncs x xSize
+      validSizedExpression argVars knownFuncs y ySize)
+    (fresh $ \x y xSize ySize -> do
+      expr ==^ Mul x y
+      pluso xSize ySize outSize
+      xSize =/^ Z
+      ySize =/^ Z
+      validSizedExpression argVars knownFuncs x xSize
+      validSizedExpression argVars knownFuncs y ySize)
+    (fresh $ \x xSize -> do
+      expr ==^ IsTrue x
+      plus1 xSize outSize
+      xSize =/^ Z
+      validSizedExpression argVars knownFuncs x xSize)
+    (fresh $ \c t f cSize tSize tmp fSize -> do
+      expr ==^ If c t f
+      cSize =/^ Z
+      tSize =/^ Z
+      fSize =/^ Z
+      tmp =/^ Z
+      pluso fSize tmp outSize
+      pluso cSize tSize tmp
+      validSizedExpression argVars knownFuncs c cSize
+      validSizedExpression argVars knownFuncs t tSize
+      validSizedExpression argVars knownFuncs f fSize)
+
+    -- (fresh $ \name args -> do
+    --   expr ==^ Funcall name args
+    --   member name knownFuncs
+    --   allo (validExpression argVars knownFuncs) args)
+
 
 -- validExpression
 --   :: Program (List Name)
 --   -> Program (List Name)
 --   -> Program Expr
---   -> Predicate ProgramF
--- validExpression vars knownFuncs expr = do
---   -- trace (intercalate ", " ["vars = " ++ hshow vars, "knownFuncs = " ++ hshow knownFuncs, "expr = " ++ hshow expr]) $
+--   -> Predicate ProgramVar
+-- validExpression argVars knownFuncs expr = do
+--   -- trace (intercalate ", " ["argVars = " ++ hshow argVars, "knownFuncs = " ++ hshow knownFuncs, "expr = " ++ hshow expr]) $
 --   vs <- Fresh
 --   isExpr expr
 --   exprVars expr iNil vs
---   allo (`isDeclaredVariable` vars) vs
+--   allo (`isDeclaredVariable` argVars) vs
 --   where
 --     isExpr expr =
 --       conde
---         (manyFresh $ \name -> do
+--         (fresh $ \name -> do
 --           expr ==^ Var name
 --           )
---         (manyFresh $ \x y -> do
+--         (fresh $ \x y -> do
 --           expr ==^ Add x y
 --           isExpr x
 --           isExpr y)
---         -- (manyFresh $ \x y -> do
+--         -- (fresh $ \x y -> do
 --         --   expr ==^ Mul x y
---         --   validExpression vars knownFuncs x
---         --   validExpression vars knownFuncs y)
---         -- (manyFresh $ \x -> do
+--         --   validExpression argVars knownFuncs x
+--         --   validExpression argVars knownFuncs y)
+--         -- (fresh $ \x -> do
 --         --   expr ==^ IsTrue x
---         --   validExpression vars knownFuncs x)
---         -- (manyFresh $ \c t f -> do
+--         --   validExpression argVars knownFuncs x)
+--         -- (fresh $ \c t f -> do
 --         --   expr ==^ If c t f
---         --   validExpression vars knownFuncs c
---         --   validExpression vars knownFuncs t
---         --   validExpression vars knownFuncs f)
---         -- (manyFresh $ \name args -> do
+--         --   validExpression argVars knownFuncs c
+--         --   validExpression argVars knownFuncs t
+--         --   validExpression argVars knownFuncs f)
+--         -- (fresh $ \name args -> do
 --         --   expr ==^ Funcall name args
 --         --   member name knownFuncs
---         --   allo (validExpression vars knownFuncs) args)
+--         --   allo (validExpression argVars knownFuncs) args)
 --
 -- exprVars
 --   :: Program Expr
 --   -> Program (List Name)
 --   -> Program (List Name)
---   -> Predicate ProgramF
+--   -> Predicate ProgramVar
 -- exprVars expr vs outVs =
 --   conde
---     (manyFresh $ \name -> do
+--     (fresh $ \name -> do
 --       expr  ==^ Var name
 --       outVs ==^ Cons name vs)
---     (manyFresh $ \x y -> do
+--     (fresh $ \x y -> do
 --       expr ==^ Add x y
 --       vs' <- Fresh
 --       exprVars x vs vs'
 --       exprVars y vs' outVs)
---     -- (manyFresh $ \x y -> do
+--     -- (fresh $ \x y -> do
 --     --   expr ==^ Mul x y
---     --   validExpression vars knownFuncs x
---     --   validExpression vars knownFuncs y)
---     -- (manyFresh $ \x -> do
+--     --   validExpression argVars knownFuncs x
+--     --   validExpression argVars knownFuncs y)
+--     -- (fresh $ \x -> do
 --     --   expr ==^ IsTrue x
---     --   validExpression vars knownFuncs x)
---     -- (manyFresh $ \c t f -> do
+--     --   validExpression argVars knownFuncs x)
+--     -- (fresh $ \c t f -> do
 --     --   expr ==^ If c t f
---     --   validExpression vars knownFuncs c
---     --   validExpression vars knownFuncs t
---     --   validExpression vars knownFuncs f)
---     -- (manyFresh $ \name args -> do
+--     --   validExpression argVars knownFuncs c
+--     --   validExpression argVars knownFuncs t
+--     --   validExpression argVars knownFuncs f)
+--     -- (fresh $ \name args -> do
 --     --   expr ==^ Funcall name args
 --     --   member name knownFuncs
---     --   allo (validExpression vars knownFuncs) args)
+--     --   allo (validExpression argVars knownFuncs) args)
 
 
 isUndeclaredVariable
   :: Program Name
   -> Program (List Name)
-  -> Predicate ProgramF
+  -> Predicate ProgramVar
 isUndeclaredVariable = notMember
 
 isDeclaredVariable
   :: Program Name
   -> Program (List Name)
-  -> Predicate ProgramF
+  -> Predicate ProgramVar
 isDeclaredVariable = member
 
 
 hdisplay :: (HPretty a) => a ix -> Text
 hdisplay = PP.displayT . PP.renderPretty 0.9 100 . hpretty
 
-display :: (Pretty a) => a -> Text
-display = PP.displayT . PP.renderPretty 0.9 100 . PP.pretty
+display :: (Pretty a) => a -> String
+display = T.unpack . PP.displayT . PP.renderPretty 0.9 100 . PP.pretty
 
 main :: IO ()
 main = do
@@ -232,10 +415,21 @@ main = do
   case args of
     [x] -> do
       let funcs = runN (read x) validFunction
-      -- let funcs = runN (read x) (validExpression vars funcSet)
+      -- let funcs = runN (read x) (validExpression argVars funcSet)
       forM_ (zip [0..] funcs) $ \(n, (func, neqs)) -> do
         -- TIO.putStrLn $ T.pack $ hshow func
-        putStrLn $ show n
+        putStrLn $ "#" ++ show n
+        TIO.putStrLn $ hdisplay func
+        putStrLn $ "# of neqs = " ++ show (genericLength neqs)
+        TIO.putStrLn $ T.replicate 10 "-"
+    [x, y] -> do
+      let funcs = runN (read x) $ \q -> validSizedFunction (int2nat (read y)) q
+      -- let funcs = runN (read x) $ \q -> statementSize q $ int2nat (read y)
+      when (null funcs) $
+        putStrLn "No results"
+      forM_ (zip [0..] funcs) $ \(n, (func, neqs)) -> do
+        -- TIO.putStrLn $ T.pack $ hshow func
+        putStrLn $ "#" ++ show n
         TIO.putStrLn $ hdisplay func
         putStrLn $ "# of neqs = " ++ show (genericLength neqs)
         TIO.putStrLn $ T.replicate 10 "-"
@@ -245,8 +439,3 @@ main = do
   where
     (>>) = (Monad.>>)
     (>>=) = (Monad.>>=)
-
-    -- vars :: Program (List Name)
-    -- vars = list [iNameF 1, iNameF 2, iNameF 3]
-    -- funcSet :: Program (List Name)
-    -- funcSet = list [iNameF 10]
