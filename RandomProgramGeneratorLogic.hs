@@ -11,6 +11,7 @@
 --
 ----------------------------------------------------------------------------
 
+{-# LANGUAGE DoAndIfThenElse     #-}
 {-# LANGUAGE FlexibleContexts    #-}
 {-# LANGUAGE GADTs               #-}
 {-# LANGUAGE OverloadedStrings   #-}
@@ -25,15 +26,21 @@
 
 module RandomProgramGeneratorLogic where
 
-import Control.Monad (forM_, when)
+import Control.Monad (forM_)
 import qualified Control.Monad as Monad
+import Control.Monad.Reader (Reader, runReader)
+import Control.Monad.State (State, evalState)
+import Data.Functor.Identity
 import Data.HUtils
+import Data.Proxy
+import Data.Random.Source.PureMT (PureMT, pureMT)
 import Data.String
 import Data.Text.Lazy (Text)
 import qualified Data.Text.Lazy as T
 import qualified Data.Text.Lazy.IO as TIO
 import Language.HKanren.Functions.List
 import Language.HKanren.Functions.Nat
+import Language.HKanren.Nondeterminism
 import Language.HKanren.Syntax
 import Language.HKanren.Types.List
 import Language.HKanren.Types.Nat
@@ -42,11 +49,13 @@ import Text.PrettyPrint.Leijen.Text (Pretty)
 import qualified Text.PrettyPrint.Leijen.Text as PP
 
 import Data.List (genericLength, zip, null)
-import Prelude (IO, return, fail, ($), fromInteger, read, (.), fromRational, show, (++), putStrLn)
+import Prelude (Int, Bool(..), IO, return, fail, ($), fromInteger, read, (.), fromRational, show, (++), putStrLn)
 
 import LogicGeneratorTypes
 
 import Debug.Trace
+
+default (Int)
 
 argVars :: Program (List Name)
 argVars = list [iNameF 1, iNameF 2, iNameF 3]
@@ -409,33 +418,74 @@ hdisplay = PP.displayT . PP.renderPretty 0.9 100 . hpretty
 display :: (Pretty a) => a -> String
 display = T.unpack . PP.displayT . PP.renderPretty 0.9 100 . PP.pretty
 
+
+-- nondet :: Proxy NondetLogicT
+-- nondet = nondetLogicT
+--
+-- runNondet :: Identity a -> a
+-- runNondet = runIdentity
+
+-- nondet :: Proxy NondetDepthFirst
+-- nondet = nondetDepthFirst
+--
+-- runNondet :: Identity a -> a
+-- runNondet = runIdentity
+
+-- nondet :: Proxy NondetBreadthFirst -- Randomized
+-- nondet = nondetBreadthFirst -- Randomized
+--
+-- runNondet :: Identity a -> a
+-- runNondet = runIdentity
+
+nondet :: Proxy NondetIterativeDeepeningBreadthFirst
+nondet = nondetIterativeDeepeningBreadthFirst
+
+runNondet :: Reader Int a -> a
+runNondet x = runReader x 10
+
+
+-- runNondet :: State PureMT a -> a
+-- runNondet x = evalState x mt
+--   where
+--     mt :: PureMT
+--     mt = pureMT 0
+
+
 main :: IO ()
 main = do
   args <- getArgs
   case args of
     [x] -> do
-      let funcs = runN (read x) validFunction
-      -- let funcs = runN (read x) (validExpression argVars funcSet)
-      forM_ (zip [0..] funcs) $ \(n, (func, neqs)) -> do
+      let funcs  = runN nondet (read x) validFunction
+          funcs' = runNondet funcs
+      -- let funcs = runN nondet (read x) (validExpression argVars funcSet)
+      -- let funcs = runN nondet (read x) (validExpression argVars funcSet)
+      forM_ (zip [0..] funcs') $ \(n, (func, neqs)) -> do
         -- TIO.putStrLn $ T.pack $ hshow func
         putStrLn $ "#" ++ show n
         TIO.putStrLn $ hdisplay func
         putStrLn $ "# of neqs = " ++ show (genericLength neqs)
         TIO.putStrLn $ T.replicate 10 "-"
     [x, y] -> do
-      let funcs = runN (read x) $ \q -> validSizedFunction (int2nat (read y)) q
-      -- let funcs = runN (read x) $ \q -> statementSize q $ int2nat (read y)
-      when (null funcs) $
+      -- let funcs = runN nondet (read x) $ \q -> validSizedFunction (int2nat (read y)) q
+      let funcs  = runN nondet (read x) $ \q -> validSizedFunctionNaive (int2nat (read y)) q
+          funcs' = runNondet funcs
+      -- let funcs = runN nondet (read x) $ \q -> statementSize q $ int2nat (read y)
+      if null funcs'
+      then
         putStrLn "No results"
-      forM_ (zip [0..] funcs) $ \(n, (func, neqs)) -> do
-        -- TIO.putStrLn $ T.pack $ hshow func
-        putStrLn $ "#" ++ show n
-        TIO.putStrLn $ hdisplay func
-        putStrLn $ "# of neqs = " ++ show (genericLength neqs)
-        TIO.putStrLn $ T.replicate 10 "-"
+      else
+        forM_ (zip [0..] funcs') $ \(n, (func, neqs)) -> do
+          -- TIO.putStrLn $ T.pack $ hshow func
+          putStrLn $ "#" ++ show n
+          TIO.putStrLn $ hdisplay func
+          putStrLn $ "# of neqs = " ++ show (genericLength neqs)
+          TIO.putStrLn $ T.replicate 10 "-"
     _ ->
         TIO.putStrLn $ T.pack $ "invalid arguments: " ++ show args
   return ()
   where
     (>>) = (Monad.>>)
     (>>=) = (Monad.>>=)
+    ifThenElse True t _ = t
+    ifThenElse _    _ f = f

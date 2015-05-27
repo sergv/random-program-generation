@@ -27,7 +27,7 @@ library
   default-language:  Haskell2010
 
 executable           program-generator-logic
-  build-depends:     base >= 4.7, wl-pprint-text, text, hkanren
+  build-depends:     base >= 4.7, mtl, random-source, wl-pprint-text, text, hkanren
   main-is:           RandomProgramGeneratorLogic.hs
   other-modules:     LogicGeneratorTypes
   default-language:  Haskell2010

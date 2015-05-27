@@ -37,8 +37,8 @@ import Language.HKanren
 import Language.HKanren.Types.Nat
 import Language.HKanren.Types.List
 -- import qualified Language.HKanren.SafeLVar as Safe
--- import qualified Language.HKanren.IntegerLVar as Integer
-import qualified Language.HKanren.IntLVar as Int
+import qualified Language.HKanren.IntegerLVar as Integer
+-- import qualified Language.HKanren.IntLVar as Int
 
 import Text.PrettyPrint.Leijen.Text (Doc, (<+>), parens, group, align, lbrace, rbrace, punctuate, sep, vsep)
 import qualified Text.PrettyPrint.Leijen.Text as PP
@@ -621,5 +621,5 @@ instance HOrdHet (Type (FunctionF h)) where
 -- Main functor
 
 type ProgramF   = ListF :+: NatF :+: NameF :+: ExprF :+: StatementF :+: FunctionF
-type ProgramVar = Int.LVar ProgramF
+type ProgramVar = Integer.LVar ProgramF
 type Program    = Term ProgramVar
