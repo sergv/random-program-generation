@@ -82,6 +82,12 @@ validFunction' prog =
     argVars :: Program (List Name)
     argVars = list [iNameF 1, iNameF 2]
 
+unlikely :: Int
+unlikely = 1
+
+likely :: Int
+likely = 10
+
 validStatement
   :: Program (List Name)
   -> Program (List Name)
@@ -89,24 +95,27 @@ validStatement
   -> Program (List Name)
   -> Predicate ProgramVar
 validStatement argVars knownFuncs stmt outVars =
-  conde
+  condp
     -- (fresh $ \name -> do
     --   stmt ==^ Declaration name
     --   isUndeclaredVariable name argVars
     --   outVars ==^ Cons name argVars)
-    (fresh $ \stmts -> do
-      stmt ==^ Block stmts
-      foldlo' argVars stmts outVars $ \acc x out ->
-        validStatement acc knownFuncs x out)
-    (fresh $ \name expr -> do
-      stmt ==^ Assignment name expr
-      isDeclaredVariable name argVars
-      validExpression argVars knownFuncs expr
-      outVars ==^ Cons name argVars)
-    (fresh $ \cond body -> do
-      stmt ==^ While cond body
-      validExpression argVars knownFuncs cond
-      validStatement argVars knownFuncs body outVars)
+    ( unlikely
+    , fresh $ \stmts -> do
+        stmt ==^ Block stmts
+        foldlo' argVars stmts outVars $ \acc x out ->
+          validStatement acc knownFuncs x out)
+    ( likely
+    , fresh $ \name expr -> do
+        stmt ==^ Assignment name expr
+        isDeclaredVariable name argVars
+        validExpression argVars knownFuncs expr
+        outVars ==^ Cons name argVars)
+    ( unlikely
+    , fresh $ \cond body -> do
+        stmt ==^ While cond body
+        validExpression argVars knownFuncs cond
+        validStatement argVars knownFuncs body outVars)
 
 validExpression
   :: Program (List Name)
@@ -114,26 +123,31 @@ validExpression
   -> Program Expr
   -> Predicate ProgramVar
 validExpression argVars knownFuncs expr =
-  conde
-    (fresh $ \name -> do
-      expr ==^ Var name
-      isDeclaredVariable name argVars)
-    (fresh $ \x y -> do
-      expr ==^ Add x y
-      validExpression argVars knownFuncs x
-      validExpression argVars knownFuncs y)
-    (fresh $ \x y -> do
-      expr ==^ Mul x y
-      validExpression argVars knownFuncs x
-      validExpression argVars knownFuncs y)
-    (fresh $ \x -> do
-      expr ==^ IsTrue x
-      validExpression argVars knownFuncs x)
-    (fresh $ \c t f -> do
-      expr ==^ If c t f
-      validExpression argVars knownFuncs c
-      validExpression argVars knownFuncs t
-      validExpression argVars knownFuncs f)
+  condp
+    ( likely
+    , fresh $ \name -> do
+        expr ==^ Var name
+        isDeclaredVariable name argVars)
+    ( likely
+    , fresh $ \x y -> do
+        expr ==^ Add x y
+        validExpression argVars knownFuncs x
+        validExpression argVars knownFuncs y)
+    ( unlikely
+    , fresh $ \x y -> do
+        expr ==^ Mul x y
+        validExpression argVars knownFuncs x
+        validExpression argVars knownFuncs y)
+    ( unlikely
+    , fresh $ \x -> do
+        expr ==^ IsTrue x
+        validExpression argVars knownFuncs x)
+    ( unlikely
+    , fresh $ \c t f -> do
+        expr ==^ If c t f
+        validExpression argVars knownFuncs c
+        validExpression argVars knownFuncs t
+        validExpression argVars knownFuncs f)
     -- (fresh $ \name args -> do
     --   expr ==^ Funcall name args
     --   member name knownFuncs
@@ -243,9 +257,7 @@ validSizedBlock argVars knownFuncs stmt outVars outSize = do
     foldl2o' argVars iZ stmts outVars k $ \vars size x vars' size' -> do
       fresh $ \m -> do
         m =/^ Z
-          trace ("validSizedBlock: Block 5, size = " ++ display size') success
         pluso m size size'
-          trace ("validSizedBlock: Block 6, m = " ++ display m') success
         validSizedStatement vars knownFuncs x vars' m)
 
 validSizedStatement
@@ -431,19 +443,22 @@ display = T.unpack . PP.displayT . PP.renderPretty 0.9 100 . PP.pretty
 -- runNondet :: Identity a -> a
 -- runNondet = runIdentity
 
--- nondet :: Proxy NondetBreadthFirst -- Randomized
--- nondet = nondetBreadthFirst -- Randomized
+nondet :: Proxy NondetBreadthFirst
+nondet = nondetBreadthFirst
+
+runNondet :: Identity a -> a
+runNondet = runIdentity
+
+-- nondet :: Proxy NondetIterativeDeepeningBreadthFirst
+-- nondet = nondetIterativeDeepeningBreadthFirst
 --
--- runNondet :: Identity a -> a
--- runNondet = runIdentity
-
-nondet :: Proxy NondetIterativeDeepeningBreadthFirst
-nondet = nondetIterativeDeepeningBreadthFirst
-
-runNondet :: Reader Int a -> a
-runNondet x = runReader x 10
+-- runNondet :: Reader Int a -> a
+-- runNondet x = runReader x 7
 
 
+-- nondet :: Proxy NondetBreadthFirstRandomized
+-- nondet = nondetBreadthFirstRandomized
+--
 -- runNondet :: State PureMT a -> a
 -- runNondet x = evalState x mt
 --   where
