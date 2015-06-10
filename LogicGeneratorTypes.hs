@@ -327,7 +327,7 @@ instance (HPretty h, ReifyList h h) => HPretty (ExprF h) where
   hpretty (Var name)     = hpretty name
   hpretty (Add x y)      = parens $ hpretty x <+> "+" <+> hpretty y
   hpretty (Mul x y)      = parens $ hpretty x <+> "*" <+> hpretty y
-  hpretty (IsTrue x)     = lbrace <> hpretty x <> rbrace
+  hpretty (IsTrue x)     = PP.brackets $ hpretty x
   hpretty (If c t f)     =
     parens $
     group $

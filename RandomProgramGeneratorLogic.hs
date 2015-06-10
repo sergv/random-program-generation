@@ -28,16 +28,19 @@ module RandomProgramGeneratorLogic where
 
 import Control.Monad (forM_)
 import qualified Control.Monad as Monad
+import Control.Monad.ContNondet (RandomSourceState, runRandomSourceState, Depth(..), DepthConfig, mkDepthConfig)
 import Control.Monad.Reader (Reader, runReader)
 import Control.Monad.State (State, evalState)
 import Data.Functor.Identity
 import Data.HUtils
+import Data.Monoid
 import Data.Proxy
 import Data.Random.Source.PureMT (PureMT, pureMT)
 import Data.String
 import Data.Text.Lazy (Text)
 import qualified Data.Text.Lazy as T
 import qualified Data.Text.Lazy.IO as TIO
+import Data.Word
 import Language.HKanren.Functions.List
 import Language.HKanren.Functions.Nat
 import Language.HKanren.Nondeterminism
@@ -48,12 +51,10 @@ import System.Environment
 import Text.PrettyPrint.Leijen.Text (Pretty)
 import qualified Text.PrettyPrint.Leijen.Text as PP
 
-import Data.List (genericLength, zip, null)
-import Prelude (Int, Bool(..), IO, return, fail, ($), fromInteger, read, (.), fromRational, show, (++), putStrLn)
+import Data.List (genericLength, zip)
+import Prelude (Int, Bool(..), IO, return, fail, ($), fromInteger, read, (.), fromRational, show, (++), putStrLn, const, id)
 
 import LogicGeneratorTypes
-
-import Debug.Trace
 
 default (Int)
 
@@ -86,7 +87,7 @@ unlikely :: Int
 unlikely = 1
 
 likely :: Int
-likely = 10
+likely = 100
 
 validStatement
   :: Program (List Name)
@@ -100,7 +101,7 @@ validStatement argVars knownFuncs stmt outVars =
     --   stmt ==^ Declaration name
     --   isUndeclaredVariable name argVars
     --   outVars ==^ Cons name argVars)
-    ( unlikely
+    ( likely
     , fresh $ \stmts -> do
         stmt ==^ Block stmts
         foldlo' argVars stmts outVars $ \acc x out ->
@@ -111,7 +112,7 @@ validStatement argVars knownFuncs stmt outVars =
         isDeclaredVariable name argVars
         validExpression argVars knownFuncs expr
         outVars ==^ Cons name argVars)
-    ( unlikely
+    ( likely
     , fresh $ \cond body -> do
         stmt ==^ While cond body
         validExpression argVars knownFuncs cond
@@ -421,8 +422,7 @@ isDeclaredVariable
   :: Program Name
   -> Program (List Name)
   -> Predicate ProgramVar
-isDeclaredVariable = member
-
+isDeclaredVariable = memberp
 
 hdisplay :: (HPretty a) => a ix -> Text
 hdisplay = PP.displayT . PP.renderPretty 0.9 100 . hpretty
@@ -443,11 +443,11 @@ display = T.unpack . PP.displayT . PP.renderPretty 0.9 100 . PP.pretty
 -- runNondet :: Identity a -> a
 -- runNondet = runIdentity
 
-nondet :: Proxy NondetBreadthFirst
-nondet = nondetBreadthFirst
-
-runNondet :: Identity a -> a
-runNondet = runIdentity
+-- nondet :: Proxy NondetBreadthFirst
+-- nondet = nondetBreadthFirst
+--
+-- runNondet :: Identity a -> a
+-- runNondet = runIdentity
 
 -- nondet :: Proxy NondetIterativeDeepeningBreadthFirst
 -- nondet = nondetIterativeDeepeningBreadthFirst
@@ -455,6 +455,14 @@ runNondet = runIdentity
 -- runNondet :: Reader Int a -> a
 -- runNondet x = runReader x 7
 
+-- nondet :: Proxy NondetDepthFirstRandomized
+-- nondet = nondetDepthFirstRandomized
+--
+-- runNondet :: State PureMT a -> Word64 -> a
+-- runNondet x seed = evalState x mt
+--   where
+--     mt :: PureMT
+--     mt = pureMT seed
 
 -- nondet :: Proxy NondetBreadthFirstRandomized
 -- nondet = nondetBreadthFirstRandomized
@@ -465,37 +473,54 @@ runNondet = runIdentity
 --     mt :: PureMT
 --     mt = pureMT 0
 
+nondet :: Proxy NondetDepthFirstRandomizedAfterSomeDepth
+nondet = nondetDepthFirstRandomizedAfterSomeDepth
+
+runNondet :: RandomSourceState DepthConfig a -> Word64 -> Int -> a
+runNondet x seed d = runRandomSourceState x mt $ mkDepthConfig $ Depth d
+  where
+    mt :: PureMT
+    mt = pureMT seed
+
+size :: forall k ix. (HFoldable (LFunctor k)) => Term k ix -> Int
+size = getSum . unK . go
+  where
+    go :: Term k ix' -> K (Sum Int) ix'
+    go (HPure _) = one
+    go (HFree x) = one <> hfoldMap (K . unK . go) x
+    one :: K (Sum Int) ix'
+    one = K (Sum 1)
 
 main :: IO ()
 main = do
   args <- getArgs
   case args of
-    [x] -> do
+    [x, depth, seed] -> do
       let funcs  = runN nondet (read x) validFunction
-          funcs' = runNondet funcs
-      -- let funcs = runN nondet (read x) (validExpression argVars funcSet)
+      --  funcs = runN nondet (read x) (validExpression argVars (list []))
+          funcs' = runNondet funcs (read seed) (read depth)
       -- let funcs = runN nondet (read x) (validExpression argVars funcSet)
       forM_ (zip [0..] funcs') $ \(n, (func, neqs)) -> do
         -- TIO.putStrLn $ T.pack $ hshow func
-        putStrLn $ "#" ++ show n
+        putStrLn $ "#" ++ show n ++ ", size = " ++ show (size func)
         TIO.putStrLn $ hdisplay func
         putStrLn $ "# of neqs = " ++ show (genericLength neqs)
         TIO.putStrLn $ T.replicate 10 "-"
-    [x, y] -> do
-      -- let funcs = runN nondet (read x) $ \q -> validSizedFunction (int2nat (read y)) q
-      let funcs  = runN nondet (read x) $ \q -> validSizedFunctionNaive (int2nat (read y)) q
-          funcs' = runNondet funcs
-      -- let funcs = runN nondet (read x) $ \q -> statementSize q $ int2nat (read y)
-      if null funcs'
-      then
-        putStrLn "No results"
-      else
-        forM_ (zip [0..] funcs') $ \(n, (func, neqs)) -> do
-          -- TIO.putStrLn $ T.pack $ hshow func
-          putStrLn $ "#" ++ show n
-          TIO.putStrLn $ hdisplay func
-          putStrLn $ "# of neqs = " ++ show (genericLength neqs)
-          TIO.putStrLn $ T.replicate 10 "-"
+    -- [x, y, seed] -> do
+    --   -- let funcs = runN nondet (read x) $ \q -> validSizedFunction (int2nat (read y)) q
+    --   let funcs  = runN nondet (read x) $ \q -> validSizedFunctionNaive (int2nat (read y)) q
+    --       funcs' = runNondet funcs (read seed)
+    --   -- let funcs = runN nondet (read x) $ \q -> statementSize q $ int2nat (read y)
+    --   if null funcs'
+    --   then
+    --     putStrLn "No results"
+    --   else
+    --     forM_ (zip [0..] funcs') $ \(n, (func, neqs)) -> do
+    --       -- TIO.putStrLn $ T.pack $ hshow func
+    --       putStrLn $ "#" ++ show n -- ++ ", size = " ++ show (size func)
+    --       TIO.putStrLn $ hdisplay func
+    --       putStrLn $ "# of neqs = " ++ show (genericLength neqs)
+    --       TIO.putStrLn $ T.replicate 10 "-"
     _ ->
         TIO.putStrLn $ T.pack $ "invalid arguments: " ++ show args
   return ()
